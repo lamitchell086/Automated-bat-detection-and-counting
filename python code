@@ -1,0 +1,242 @@
+##install packages needed for video processing
+#library for numerical computing
+import numpy as np
+#library for computer vision and image/video processing 
+import cv2 as cv
+#module for time-related functions
+import time
+#generates random numbers for adding variability to a process
+from random import randint
+#data manipulation and analysis library
+import pandas as pd
+
+# Define the Bat class- data structure that tracks and manages information about the individual bats that are moving across frames. Takes into account the individual bats color, position, state, and direction.
+class Bat:
+    def __init__(self, i, xi, yi, max_age):
+        self.i = i
+        self.x = xi
+        self.y = yi
+        self.prev_x = xi
+        self.prev_y = yi
+        self.tracks = []
+        self.R = randint(0, 255)
+        self.G = randint(0, 255)
+        self.B = randint(0, 255)
+        self.done = False
+        self.state = '0'
+        self.age = 0
+        self.max_age = max_age
+        self.dir = None
+
+    def getRGB(self):
+        return (self.R, self.G, self.B)
+
+    def getTracks(self):
+        return self.tracks
+
+    def getId(self):
+        return self.i
+
+    def getState(self):
+        return self.state
+
+    def getDir(self):
+        return self.dir
+
+    def getX(self):
+        return self.x
+
+    def getY(self):
+        return self.y
+
+    def updateCoords(self, xn, yn):
+        self.prev_x = self.x
+        self.prev_y = self.y
+        self.age = 0
+        self.tracks.append([self.x, self.y])
+        self.x = xn
+        self.y = yn
+
+    def setDone(self):
+        self.done = True
+
+    def timedOut(self):
+        return self.done
+
+    def going_IN(self, mid_start, mid_end):  # Switched logic
+        if len(self.tracks) >= 2:
+            if self.state == '0':
+                if self.tracks[-1][1] < mid_end and self.tracks[-2][1] >= mid_end:
+                    self.state = '1'
+                    self.dir = 'in'
+                    return True
+            return False
+        return False
+
+    def going_OUT(self, mid_start, mid_end):  # Switched logic
+        if len(self.tracks) >= 2:
+            if self.state == '0':
+                if self.tracks[-1][1] > mid_start and self.tracks[-2][1] <= mid_start:
+                    self.state = '1'
+                    self.dir = 'out'
+                    return True
+            return False
+        return False
+
+    def age_one(self):
+        self.age += 1
+        if self.age > self.max_age:
+            self.done = True
+
+# Open log file to keep track of bats being detected 
+try:
+    log = open('bat_log.txt', "w")
+except:
+    print("Cannot open log file")
+
+# Initialize counters for bats flying out of or into the roost
+cnt_out = 0
+cnt_in = 0
+
+# List of video file pathways to process, multiple can be listed and separated by a comma
+video_files = [
+    'C:/Users/APS4/Desktop/video_016.mp4
+]
+
+# DataFrame to store results
+results = []
+
+# Process each video file in order
+for video_file in video_files:
+    print(f"Processing video: {video_file}")
+    cap = cv.VideoCapture(video_file)
+
+    # Video properties
+    h = 768
+    w = 1024
+    frameArea = h * w
+    areaTH = frameArea / 500  # Adjusted for smaller objects like bats
+    print('Area Threshold', areaTH)
+
+    # Entry/Exit lines
+	#first integer can be increased or deceased to determine where on te frame the counting lines lie
+    line_out = int(2 * (h / 5))
+    line_in = int(3 * (h / 5))
+    
+    #Boundaries on the frame (must must fall within boundary to be counted)
+    out_limit = int(1 * (h / 5))
+    in_limit = int(4 * (h / 5))
+
+    #Print the counting lines on the frame
+    print("Red line y:", str(line_out))
+    print("Blue line y:", str(line_in))
+    line_out_color = (255, 0, 0)
+    line_in_color = (0, 0, 255)
+    pt1 = [0, line_out]
+    pt2 = [w, line_out]
+    pts_L1 = np.array([pt1, pt2], np.int32)
+    pts_L1 = pts_L1.reshape((-1, 1, 2))
+    pt3 = [0, line_in]
+    pt4 = [w, line_in]
+    pts_L2 = np.array([pt3, pt4], np.int32)
+    pts_L2 = pts_L2.reshape((-1, 1, 2))
+
+    # Background subtractor that eliminates pixels deemed as the stagnant background
+    fgbg = cv.createBackgroundSubtractorMOG2(detectShadows=True)
+
+    # Morphological operations- removes noise and closes small holes in the foreground
+    kernelOp = np.ones((3, 3), np.uint8)
+    kernelCl = np.ones((11, 11), np.uint8)
+
+    # Variables and bat tracking info
+    font = cv.FONT_HERSHEY_SIMPLEX
+    bats = []
+    max_b_age = 5
+    bid = 1
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break   #reads each video frame in order
+
+        for bat in bats:
+            bat.age_one()  # Age every bat one frame
+
+        # Preprocessing (applies background subtraction, foreground mask becomes binary image, removes noise, fils small holes in detected objects
+        fgmask = fgbg.apply(frame)
+        ret, imBin = cv.threshold(fgmask, 200, 255, cv.THRESH_BINARY)
+        mask = cv.morphologyEx(imBin, cv.MORPH_OPEN, kernelOp)
+        mask = cv.morphologyEx(mask, cv.MORPH_CLOSE, kernelCl)
+
+        # Find contours of detected objects
+        contours, _ = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            area = cv.contourArea(cnt)
+            if area > areaTH:
+                # Tracking and counting of emerging/returning bats
+                M = cv.moments(cnt)
+                cx = int(M['m10'] / M['m00'])
+                cy = int(M['m01'] / M['m00'])
+                x, y, w, h = cv.boundingRect(cnt)
+
+                new_bat = True
+                if cy in range(out_limit, in_limit):
+                    for bat in bats:
+                        if abs(cx - bat.getX()) <= w and abs(cy - bat.getY()) <= h:
+                            new_bat = False
+                            bat.updateCoords(cx, cy)
+                            if bat.going_IN(line_out, line_in):  # Switched logic
+                                cnt_in += 1
+                                print("ID:", bat.getId(), 'crossed going in at', time.strftime("%c"))
+                                log.write("ID: " + str(bat.getId()) + ' crossed going in at ' + time.strftime("%c") + '\n')
+                                results.append({'Video File': video_file, 'Bat ID': bat.getId(), 'Direction': 'IN', 'Timestamp': time.strftime("%c")})
+                            elif bat.going_OUT(line_out, line_in):  # Switched logic
+                                cnt_out += 1
+                                print("ID:", bat.getId(), 'crossed going out at', time.strftime("%c"))
+                                log.write("ID: " + str(bat.getId()) + ' crossed going out at ' + time.strftime("%c") + '\n')
+                                results.append({'Video File': video_file, 'Bat ID': bat.getId(), 'Direction': 'OUT', 'Timestamp': time.strftime("%c")})
+                            break
+                    if new_bat:
+                        p = Bat(bid, cx, cy, max_b_age)
+                        bats.append(p)
+                        bid += 1
+
+        # Remove timed out bats
+        bats = [bat for bat in bats if not bat.timedOut()]
+
+        # Drawing of bats current position
+        for bat in bats:
+            cv.circle(frame, (bat.getX(), bat.getY()), 5, bat.getRGB(), -1)
+            cv.putText(frame, str(bat.getId()), (bat.getX(), bat.getY()), font, 0.5, bat.getRGB(), 1, cv.LINE_AA)
+
+        # Draw lines for in/out counting
+        cv.polylines(frame, [pts_L1], False, line_out_color, thickness=2)
+        cv.polylines(frame, [pts_L2], False, line_in_color, thickness=2)
+        cv.putText(frame, 'IN: ' + str(cnt_in), (10, 40), font, 0.5, (255, 255, 255), 2, cv.LINE_AA)  # Switched labels from people counter
+        cv.putText(frame, 'OUT: ' + str(cnt_out), (10, 90), font, 0.5, (255, 255, 255), 2, cv.LINE_AA)  # Switched labels from people counter
+
+        
+        
+       # Display frames during processing (should be removed after happy with line placement)
+        cv.imshow("Frame", frame)
+        cv.imshow("Mask", mask)
+    
+
+        if cv.waitKey(30) & 0xff == 27:
+            break
+
+    print(f"Total Bats Going In: {cnt_in}")  # Print the number of bats exiting the roost
+    print(f"Total Bats Going Out: {cnt_out}")  # Print the number of bats entering the roost 
+
+#stop video processing, ensure all info is stored on the excel, close the processing windows
+    cap.release()
+
+log.flush()
+log.close()
+cv.destroyAllWindows()
+
+# Create DataFrame from results and export to Excel
+df = pd.DataFrame(results)
+df.to_excel('bat_log_video_016.xlsx', index=False)
+
+print("Results saved to bat_log_video_016.xlsx")
